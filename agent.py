@@ -28,6 +28,36 @@ def get_wm_q_ratio(episode):
         return [2, 3]   # Q-focused but WM stays strong (250-1200)
 
 
+class MixedSampler:
+    """Yields (states, actions, rewards, next_states, dones) in latent space.
+
+    Each call randomly draws from the real replay buffer or world model imagination
+    based on real_ratio. Both sources return the same tensor shapes and reward scale.
+    """
+
+    def __init__(self, agent, real_ratio=0.5):
+        self.agent = agent
+        self.real_ratio = real_ratio
+
+    def sample(self, batch_size, horizon):
+        if random.random() < self.real_ratio:
+            return self._sample_real(batch_size, horizon)
+        return self._sample_imagined(batch_size, horizon)
+
+    def _sample_real(self, batch_size, horizon):
+        agent = self.agent
+        # Sample batch_size*horizon to match imagined output size
+        obs, actions, rewards, next_obs, dones = agent.memory.sample_buffer(batch_size * horizon)
+        with torch.no_grad():
+            states      = agent.world_model.encode(agent.normalize_observation(obs)).squeeze(1)
+            next_states = agent.world_model.encode(agent.normalize_observation(next_obs)).squeeze(1)
+        rewards = rewards / 100.0  # match imagined reward scale (reward head trained with /100 targets)
+        return states, actions, rewards, next_states, dones
+
+    def _sample_imagined(self, batch_size, horizon):
+        return self.agent.imagine_trajectory(batch_size, horizon)
+
+
 class Agent:
 
     def __init__(self, env : gym.Env,
@@ -254,6 +284,42 @@ class Agent:
 
 
 
+    def train_q_model_on_mixed(self, sampler, horizon, batch_size, epochs=1):
+        """Train Q-model using MixedSampler (real buffer or imagination per call)."""
+
+        total_loss = 0.0
+        total_reward = 0.0
+
+        for _ in range(epochs):
+            states, actions, rewards, next_states, dones = sampler.sample(batch_size, horizon)
+
+            total_reward += rewards.mean().item()
+
+            actions = actions.unsqueeze(1).long()
+            rewards = rewards.unsqueeze(1)
+            dones   = dones.unsqueeze(1).float()
+
+            q_sa = self.q_model(states).gather(1, actions)
+
+            with torch.no_grad():
+                next_actions = self.q_model(next_states).argmax(dim=1, keepdim=True)
+                next_q       = self.target_q_model(next_states).gather(1, next_actions)
+                targets      = rewards + (1 - dones) * self.gamma * next_q
+
+            loss = F.mse_loss(q_sa, targets)
+            self.q_model_optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.q_model.parameters(), max_norm=1.0)
+            self.q_model_optimizer.step()
+
+            if self.total_steps % self.target_update_interval == 0:
+                self.target_q_model.load_state_dict(self.q_model.state_dict())
+
+            total_loss += loss.item()
+            self.total_steps += 1
+
+        return total_loss / epochs, total_reward / epochs
+
     def evaluate_reconstruction(self, num_samples=4, filename="reconstruction_test.png"):
         """Evaluate reconstruction quality by comparing original vs reconstructed observations.
 
@@ -359,7 +425,7 @@ class Agent:
         self.q_model.train()
         return total_rewards
 
-    def train(self, episodes=1, offline_training_epochs=1, batch_size=1, num_batches=1, wm_batch_size=1, imagination_steps=None):
+    def train(self, episodes=1, offline_training_epochs=1, batch_size=1, num_batches=1, wm_batch_size=1, imagination_steps=None, real_ratio=0.5):
 
         rollout_steps = imagination_steps if imagination_steps is not None else batch_size
 
@@ -367,6 +433,8 @@ class Agent:
         summary_writer_name = f'runs/{datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}_{run_tag}'
 
         writer = SummaryWriter(summary_writer_name)
+
+        sampler = MixedSampler(self, real_ratio=real_ratio)
 
         for episode in range(episodes):
             
@@ -442,7 +510,7 @@ class Agent:
 
                 # Q-model updates (ratio[1]=0 means no Q training)
                 for _ in range(current_ratio[1]):
-                    q_loss, imag_reward = self.train_q_model_on_imagination(rollout_steps, batch_size, epochs=1)
+                    q_loss, imag_reward = self.train_q_model_on_mixed(sampler, rollout_steps, batch_size, epochs=1)
                     total_q_loss += q_loss
                     total_imag_reward += imag_reward
                     q_updates += 1
@@ -487,6 +555,7 @@ class Agent:
             writer.add_scalar("Train/epsilon", self.epsilon, episode)
             writer.add_scalar("Train/imagine_epsilon", self.imagine_epsilon, episode)
             writer.add_scalar("Train/avg_q_loss", episode_loss, episode)
+            writer.add_scalar("Train/real_ratio", real_ratio, episode)
 
             if episode % 10 == 0:
                 self.evaluate_reconstruction(num_samples=4, filename="reconstruction_test.png")
