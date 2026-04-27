@@ -4,37 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from models.encoder import Encoder, Decoder
 from models.base import BaseModel
-from models.ssim_loss import ssim_loss
 from models.dynamics_model import DynamicsModel
 
-
-def gradient_loss(pred, target):
-    """
-    Compute gradient/edge loss between predicted and target images.
-
-    Preserves high-contrast edges and small objects (like the ball).
-    Computes L1 loss on horizontal and vertical gradients.
-
-    Args:
-        pred: (B, C, H, W) predicted images
-        target: (B, C, H, W) target images
-
-    Returns:
-        scalar gradient loss
-    """
-    # Horizontal gradients (edges)
-    pred_dx = pred[:, :, :, 1:] - pred[:, :, :, :-1]
-    target_dx = target[:, :, :, 1:] - target[:, :, :, :-1]
-
-    # Vertical gradients (edges)
-    pred_dy = pred[:, :, 1:, :] - pred[:, :, :-1, :]
-    target_dy = target[:, :, 1:, :] - target[:, :, :-1, :]
-
-    # L1 loss on gradients
-    loss_dx = F.l1_loss(pred_dx, target_dx)
-    loss_dy = F.l1_loss(pred_dy, target_dy)
-
-    return loss_dx + loss_dy
 
 class WorldModel(BaseModel):
 
@@ -182,10 +153,7 @@ class WorldModel(BaseModel):
         recon, embeds, next_embed_pred, reward_pred, done_pred = self.forward(obs_normalized, action_onehot)
 
         # === 1. Reconstruction Loss ===
-        l1_loss = F.l1_loss(recon, obs_normalized)
-        structural_loss = ssim_loss(recon, obs_normalized)
-        edge_loss = gradient_loss(recon, obs_normalized)
-        recon_loss = l1_loss + 0.2 * structural_loss + 0.1 * edge_loss
+        recon_loss = F.l1_loss(recon, obs_normalized)
 
         # === 2. Dynamics Loss ===
         # Encode next observation to get target embedding
@@ -216,9 +184,6 @@ class WorldModel(BaseModel):
             "dynamics": dynamics_loss.item(),
             "reward": reward_loss.item(),
             "done": done_loss.item(),
-            "l1": l1_loss.item(),
-            "ssim": structural_loss.item(),
-            "edge": edge_loss.item(),
         }
 
 

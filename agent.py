@@ -193,43 +193,29 @@ class Agent:
         total_dynamics = 0.0
         total_reward = 0.0
         total_done = 0.0
-        total_l1 = 0.0
-        total_ssim = 0.0
-        total_edge = 0.0
 
         for _ in range(epochs):
             obs, actions, rewards, next_obs, dones = self.memory.sample_buffer(batch_size)
 
-            # Compute all losses
             loss, loss_dict = self.world_model.compute_loss(obs, actions, rewards, next_obs, dones)
 
-            # Optimize
             self.world_model_optimizer.zero_grad()
             loss.backward()
             self.world_model_optimizer.step()
 
-            # Track losses
             total_loss += loss_dict["total"]
             total_recon += loss_dict["recon"]
             total_dynamics += loss_dict["dynamics"]
             total_reward += loss_dict["reward"]
             total_done += loss_dict["done"]
-            total_l1 += loss_dict["l1"]
-            total_ssim += loss_dict["ssim"]
-            total_edge += loss_dict["edge"]
 
-        # Average losses
-        avg_total = total_loss / epochs
-        avg_recon = total_recon / epochs
-        avg_dynamics = total_dynamics / epochs
-        avg_reward = total_reward / epochs
-        avg_done = total_done / epochs
-        avg_l1 = total_l1 / epochs
-        avg_ssim = total_ssim / epochs
-        avg_edge = total_edge / epochs
-
-        # Return format: combined, reward, done, recon, dynamics, l1, ssim, edge
-        return avg_total, avg_reward, avg_done, avg_recon, avg_dynamics, avg_l1, avg_ssim, avg_edge
+        return (
+            total_loss / epochs,
+            total_reward / epochs,
+            total_done / epochs,
+            total_recon / epochs,
+            total_dynamics / epochs,
+        )
 
     
 
@@ -442,31 +428,25 @@ class Agent:
             # Interleaved training with dynamic wm_q_ratio
             current_ratio = get_wm_q_ratio(episode)
 
-            total_combined_loss = 0
-            total_reward_loss = 0
-            total_done_loss = 0
-            total_next_frame_loss = 0
-            total_dynamics_loss = 0
-            total_l1_loss = 0
-            total_ssim_loss = 0
-            total_edge_loss = 0
-            total_q_loss = 0
-            total_imag_reward = 0
+            total_combined_loss = 0.0
+            total_reward_loss = 0.0
+            total_done_loss = 0.0
+            total_recon_loss = 0.0
+            total_dynamics_loss = 0.0
+            total_q_loss = 0.0
+            total_imag_reward = 0.0
             wm_updates = 0
             q_updates = 0
 
             for offline_epoch in range(offline_training_epochs):
                 # World model updates
                 for _ in range(current_ratio[0]):
-                    combined_loss, reward_loss, done_loss, recon_loss, dynamics_loss, l1_loss, ssim_loss, edge_loss = self.train_world_model(epochs=1, batch_size=wm_batch_size)
+                    combined_loss, reward_loss, done_loss, recon_loss, dynamics_loss = self.train_world_model(epochs=1, batch_size=wm_batch_size)
                     total_combined_loss += combined_loss
                     total_reward_loss += reward_loss
                     total_done_loss += done_loss
-                    total_next_frame_loss += recon_loss
+                    total_recon_loss += recon_loss
                     total_dynamics_loss += dynamics_loss
-                    total_l1_loss += l1_loss
-                    total_ssim_loss += ssim_loss
-                    total_edge_loss += edge_loss
                     wm_updates += 1
 
                 # Q-model updates (ratio[1]=0 means no Q training)
@@ -476,47 +456,26 @@ class Agent:
                     total_imag_reward += imag_reward
                     q_updates += 1
 
-            # Average the losses
-            avg_combined_loss = total_combined_loss / wm_updates if wm_updates > 0 else 0
-            avg_reward_loss = total_reward_loss / wm_updates if wm_updates > 0 else 0
-            avg_done_loss = total_done_loss / wm_updates if wm_updates > 0 else 0
-            avg_next_frame_loss = total_next_frame_loss / wm_updates if wm_updates > 0 else 0
-            avg_dynamics_loss = total_dynamics_loss / wm_updates if wm_updates > 0 else 0
-            avg_l1_loss = total_l1_loss / wm_updates if wm_updates > 0 else 0
-            avg_ssim_loss = total_ssim_loss / wm_updates if wm_updates > 0 else 0
-            avg_edge_loss = total_edge_loss / wm_updates if wm_updates > 0 else 0
-            episode_loss = total_q_loss / q_updates if q_updates > 0 else 0
+            avg_combined_loss = total_combined_loss / wm_updates if wm_updates > 0 else 0.0
+            avg_reward_loss = total_reward_loss / wm_updates if wm_updates > 0 else 0.0
+            avg_done_loss = total_done_loss / wm_updates if wm_updates > 0 else 0.0
+            avg_recon_loss = total_recon_loss / wm_updates if wm_updates > 0 else 0.0
+            avg_dynamics_loss = total_dynamics_loss / wm_updates if wm_updates > 0 else 0.0
+            episode_loss = total_q_loss / q_updates if q_updates > 0 else 0.0
 
-            # Log all losses
             writer.add_scalar("World Model/combined_loss", avg_combined_loss, episode)
+            writer.add_scalar("World Model/reconstruction_loss", avg_recon_loss, episode)
+            writer.add_scalar("World Model/dynamics_loss", avg_dynamics_loss, episode)
             writer.add_scalar("World Model/reward_loss", avg_reward_loss, episode)
             writer.add_scalar("World Model/done_loss", avg_done_loss, episode)
-            writer.add_scalar("World Model/reconstruction_loss", avg_next_frame_loss, episode)
-            writer.add_scalar("World Model/dynamics_loss", avg_dynamics_loss, episode)
-            writer.add_scalar("Reconstruction/l1_loss", avg_l1_loss, episode)
-            writer.add_scalar("Reconstruction/ssim_loss", avg_ssim_loss, episode)
-            writer.add_scalar("Reconstruction/edge_loss", avg_edge_loss, episode)
-            writer.add_scalar("Train/wm_updates_per_episode", wm_updates, episode)
-            writer.add_scalar("Train/q_updates_per_episode", q_updates, episode)
-            writer.add_scalar("Train/target_update_interval", self.target_update_interval, episode)
-            writer.add_scalar("Train/updates_per_cycle_wm", current_ratio[0], episode)
-            writer.add_scalar("Train/updates_per_cycle_q", current_ratio[1], episode)
 
             if q_updates > 0:
                 avg_imag_reward = total_imag_reward / q_updates
-                real_reward_per_step = episode_reward / episode_steps if episode_steps > 0 else 0.0
                 writer.add_scalar("Imagination/mean_reward_per_step", avg_imag_reward, episode)
-                writer.add_scalar("Imagination/real_reward_per_step", real_reward_per_step, episode)
-                writer.add_scalar("Imagination/vs_real_reward_diff", avg_imag_reward - real_reward_per_step, episode)
-
-            if episode % 100 == 0:
-                print(f"Completed episode {episode} - Reward loss: {avg_reward_loss}")
 
             writer.add_scalar("Train/episode_reward", episode_reward, episode)
             writer.add_scalar("Train/epsilon", self.epsilon, episode)
-            writer.add_scalar("Train/imagine_epsilon", self.imagine_epsilon, episode)
             writer.add_scalar("Train/avg_q_loss", episode_loss, episode)
-            writer.add_scalar("Train/real_ratio", real_ratio, episode)
 
             if episode % 10 == 0:
                 self.evaluate_reconstruction(num_samples=4, filename="reconstruction_test.png")
