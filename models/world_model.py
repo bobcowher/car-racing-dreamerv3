@@ -8,6 +8,14 @@ from models.dynamics_model import DynamicsModel
 from models.ssim_loss import ssim_loss
 
 
+def gradient_loss(pred, target):
+    pred_dx = pred[:, :, :, 1:] - pred[:, :, :, :-1]
+    target_dx = target[:, :, :, 1:] - target[:, :, :, :-1]
+    pred_dy = pred[:, :, 1:, :] - pred[:, :, :-1, :]
+    target_dy = target[:, :, 1:, :] - target[:, :, :-1, :]
+    return F.l1_loss(pred_dx, target_dx) + F.l1_loss(pred_dy, target_dy)
+
+
 class WorldModel(BaseModel):
 
     def __init__(self, observation_shape=(), embed_dim=1024, action_dim=128, n_actions=4, feature_dim=None,
@@ -154,7 +162,7 @@ class WorldModel(BaseModel):
         recon, embeds, next_embed_pred, reward_pred, done_pred = self.forward(obs_normalized, action_onehot)
 
         # === 1. Reconstruction Loss ===
-        recon_loss = F.l1_loss(recon, obs_normalized) + 0.2 * ssim_loss(recon, obs_normalized)
+        recon_loss = F.l1_loss(recon, obs_normalized) + 0.2 * ssim_loss(recon, obs_normalized) + 0.1 * gradient_loss(recon, obs_normalized)
 
         # === 2. Dynamics Loss ===
         # Encode next observation to get target embedding
