@@ -18,74 +18,35 @@ def gradient_loss(pred, target):
 
 class WorldModel(BaseModel):
 
-    def __init__(self, observation_shape=(), embed_dim=1024, action_dim=128, n_actions=4, feature_dim=None,
-                 embed_norm='layernorm'):
-        """
-        Args:
-            embed_norm: Normalization strategy for embeddings. Options:
-                - 'layernorm': Layer normalization (default, most stable)
-                - 'tanh': Tanh activation (bounds to [-1, 1])
-                - 'l2': L2 normalization (projects to unit sphere)
-                - None: No normalization (original behavior)
-        """
+    def __init__(self, observation_shape=(), embed_dim=1024, action_dim=128, n_actions=4, feature_dim=None):
         super().__init__()
 
         if feature_dim is None:
             feature_dim = embed_dim
 
-        # print(observation_shape[-1])
-        # conv_output_dim = 64
-        # Encoder/Decoder for observations
         self.encoder = Encoder(observation_shape=observation_shape, embed_dim=embed_dim)
         self.decoder = Decoder(observation_shape=observation_shape, embed_dim=feature_dim,
                                conv_output_shape=self.encoder.get_output_shape(),
                                conv_channels=self.encoder.get_conv_channels())
 
-        # Dynamics model - predicts next embedding from current embedding + action
         self.dynamics = DynamicsModel(embed_dim=embed_dim, n_actions=n_actions, hidden_dim=2048)
 
-        # Embedding normalization (applied after encoder and dynamics)
-        self.embed_norm_type = embed_norm
-        if embed_norm == 'layernorm':
-            self.embed_norm_layer = nn.LayerNorm(embed_dim)
-        else:
-            self.embed_norm_layer = None
+        self.embed_norm_layer = nn.LayerNorm(embed_dim)
 
-        # Prediction heads
-        self.reward_pred = nn.Linear(embed_dim + n_actions, 1)  # embed + action → reward
-        self.done_pred = nn.Linear(embed_dim + n_actions, 1)    # embed + action → done probability
+        self.reward_pred = nn.Linear(embed_dim + n_actions, 1)
+        self.done_pred = nn.Linear(embed_dim + n_actions, 1)
 
         self.embed_dim = embed_dim
         self.n_actions = n_actions
 
         print(f"World Model initialized. Input shape: {observation_shape}")
         print(f"  Embed dim: {embed_dim}")
-        print(f"  Embed normalization: {embed_norm}")
         print(f"  Dynamics: embed + action → next_embed")
         print(f"  Prediction heads: reward, done")
 
 
     def normalize_embedding(self, embed):
-        """
-        Apply normalization to embeddings for stability.
-
-        Args:
-            embed: (..., embed_dim) embeddings
-
-        Returns:
-            normalized embeddings with same shape
-        """
-        if self.embed_norm_type is None:
-            return embed
-        elif self.embed_norm_type == 'layernorm':
-            return self.embed_norm_layer(embed)
-        elif self.embed_norm_type == 'tanh':
-            return torch.tanh(embed)
-        elif self.embed_norm_type == 'l2':
-            # L2 normalize to unit sphere
-            return F.normalize(embed, p=2, dim=-1)
-        else:
-            raise ValueError(f"Unknown embed_norm_type: {self.embed_norm_type}")
+        return self.embed_norm_layer(embed)
 
     def encode(self, obs):
         # If obs is [B, C, H, W], add sequence dimension -> [B, 1, C, H, W]
