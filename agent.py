@@ -423,6 +423,10 @@ class Agent:
             # Log stats for the current training iteration 
             print(f"Episode {episode} | reward: {episode_reward:.1f} | epsilon: {self.epsilon:.3f} | steps: {episode_steps}")
 
+            # Adaptive real_ratio: start at 1.0 (pure real data), decay to floor by ep 400
+            current_real_ratio = max(real_ratio, 1.0 - episode / 400.0)
+            mixed_sampler.real_ratio = current_real_ratio
+
             # Interleaved training with dynamic wm_q_ratio
             current_ratio = get_wm_q_ratio(episode)
 
@@ -473,6 +477,7 @@ class Agent:
             writer.add_scalar("Train/episode_reward", episode_reward, episode)
             writer.add_scalar("Train/epsilon", self.epsilon, episode)
             writer.add_scalar("Train/avg_q_loss", episode_loss, episode)
+            writer.add_scalar("Train/real_ratio", current_real_ratio, episode)
 
             if episode % 10 == 0:
                 self.evaluate_reconstruction(num_samples=4, filename="reconstruction_test.png")
