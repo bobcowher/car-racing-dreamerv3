@@ -11,20 +11,6 @@ from torch.utils.tensorboard.writer import SummaryWriter
 import datetime
 import random
 
-def get_wm_q_ratio(episode):
-    """Dynamic world model to Q-model training ratio based on episode.
-
-    Keeps world model training strong throughout to track evolving data distribution.
-    Never drops below 400 WM updates/episode to prevent WM degradation.
-    """
-    if episode < 100:
-        return [4, 1]   # WM-heavy
-    elif episode < 200:
-        return [2, 2]   # Balanced
-    else:
-        return [2, 3]   # Q-focused
-
-
 class MixedSampler:
     """Yields (states, actions, rewards, next_states, dones) in latent space.
 
@@ -334,6 +320,16 @@ class Agent:
         self.world_model.save_the_model("world_model", verbose=True)
         self.q_model.save_the_model("q_model", verbose=True)
 
+    def save_best(self, score, episode):
+        path = "checkpoints/best.pt"
+        torch.save({
+            "episode": episode,
+            "score": score,
+            "world_model": self.world_model.state_dict(),
+            "q_model": self.q_model.state_dict(),
+        }, path)
+        print(f"Saved best checkpoint to {path} | episode: {episode} | score: {score:.1f}")
+
     def load(self):
         self.world_model.load_the_model("world_model", device=self.device)
         self.q_model.load_the_model("q_model", device=self.device)
@@ -380,6 +376,7 @@ class Agent:
         writer = SummaryWriter(summary_writer_name)
 
         mixed_sampler = MixedSampler(self, real_ratio=real_ratio)
+        best_score = float("-inf")
 
         for episode in range(episodes):
             
@@ -423,12 +420,15 @@ class Agent:
             # Log stats for the current training iteration 
             print(f"Episode {episode} | reward: {episode_reward:.1f} | epsilon: {self.epsilon:.3f} | steps: {episode_steps}")
 
+            if episode_reward > best_score:
+                best_score = episode_reward
+                self.save_best(best_score, episode)
+
             # Adaptive real_ratio: start at 1.0 (pure real data), decay to floor by ep 400
             current_real_ratio = max(real_ratio, 1.0 - episode / 800.0)
             mixed_sampler.real_ratio = current_real_ratio
 
-            # Interleaved training with dynamic wm_q_ratio
-            current_ratio = get_wm_q_ratio(episode)
+            current_ratio = [2, 2]
 
             total_combined_loss = 0.0
             total_reward_loss = 0.0
@@ -478,13 +478,12 @@ class Agent:
             writer.add_scalar("Train/epsilon", self.epsilon, episode)
             writer.add_scalar("Train/avg_q_loss", episode_loss, episode)
             writer.add_scalar("Train/real_ratio", current_real_ratio, episode)
+            writer.add_scalar("Train/best_score", best_score, episode)
 
             if episode % 10 == 0:
                 self.evaluate_reconstruction(num_samples=4, filename="reconstruction_test.png")
 
             if episode % 10 == 0:
                 self.save()
-
-
 
 
