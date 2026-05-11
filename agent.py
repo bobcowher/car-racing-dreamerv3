@@ -93,13 +93,13 @@ class Agent:
         
         hard_update(self.critic_target, self.critic)
 
-        self.policy = Actor(num_inputs=self.world_model.embed_dim, 
+        self.actor = Actor(num_inputs=self.world_model.embed_dim, 
                             num_actions=self.n_actions, 
                             hidden_dim=self.ac_hidden_size, 
                             action_space=self.env.action_space, 
                             name=f"policy").to(self.device)
 
-        self.policy_optim = Adam(self.policy.parameters(), lr=self.learning_rate)
+        self.actor_optim = Adam(self.actor.parameters(), lr=self.learning_rate)
 
         self.target_update_interval = target_update_interval
 
@@ -301,8 +301,9 @@ class Agent:
 
     def load(self):
         self.world_model.load_the_model("world_model", device=self.device)
-        self.q_model.load_the_model("q_model", device=self.device)
-        self.target_q_model.load_the_model("q_model", device=self.device)
+        self.actor.load_the_model("q_model", device=self.device)
+        self.critic.load_the_model("q_model", device=self.device)
+        hard_update(self.critic_target, self.critic)
 
     def test(self, episodes=10):
         self.q_model.eval()
@@ -335,6 +336,14 @@ class Agent:
         self.q_model.train()
         return total_rewards
 
+    def select_action(self, state, evaluate=False):
+        state = torch.FloatTensor(state).to(self.device).unsqueeze(0)
+        if evaluate is False:
+            action, _, _ = self.policy.sample(state)
+        else:
+            _, _, action = self.policy.sample(state)
+        return action.detach().cpu().numpy()[0]
+
     def train(self, episodes=1, offline_training_epochs=1, batch_size=1, wm_batch_size=1, imagination_steps=None, real_ratio=0.5):
 
         rollout_steps = imagination_steps if imagination_steps is not None else batch_size
@@ -358,14 +367,10 @@ class Agent:
 
             while not done:
 
-                if random.random() < self.epsilon:
-                    action = random.choices([0, 1, 2, 3, 4], weights=[0.05, 0.20, 0.20, 0.50, 0.05])[0]
-                else:
-                    # Encode observation to latent space before Q-model
-                    with torch.no_grad():
-                        obs_t = obs.unsqueeze(0).float().to(self.device) / 255.0
-                        embed = self.world_model.encode(obs_t).squeeze(1)  # (1, embed_dim)
-                        action = self.q_model(embed).argmax(dim=1).item()
+                with torch.no_grad():
+                    obs_t = obs.unsqueeze(0).float().to(self.device) / 255.0
+                    embed = self.world_model.encode(obs_t).squeeze(1)  # (1, embed_dim)
+                    action = self.select_action(embed)
 
                 next_obs, reward, term, trunc, _ = self.env.step(action)
 
@@ -375,7 +380,7 @@ class Agent:
 
                 self.memory.store_transition(obs, action, reward, next_obs, done)
 
-                episode_reward += reward
+                episode_reward += float(reward)
                 episode_steps += 1
 
                 obs = next_obs
