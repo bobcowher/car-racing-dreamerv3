@@ -104,6 +104,15 @@ class Agent:
         self.gamma = 0.99
         self.tau = tau
 
+        # Auto-tuned entropy temperature.
+        # target_entropy = -|A| is the standard SAC heuristic.
+        # log_alpha is clamped to [-5, 2] (alpha in [~0.007, ~7.4]) to prevent
+        # explosion (fully random policy) or collapse (fully deterministic too early).
+        self.target_entropy = -float(self.n_actions)
+        self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
+        self.alpha = self.log_alpha.exp().item()
+        self.alpha_optim = Adam([self.log_alpha], lr=self.learning_rate)
+
         self.total_steps = 0
     
     def normalize_observation(self, obs):
@@ -248,8 +257,14 @@ class Agent:
             actor_loss.backward()
             self.actor_optim.step()
 
-
-            alpha_loss = torch.tensor(0.).to(self.device)
+            # Alpha update — detach log_pi so actor gradients are isolated.
+            alpha_loss = -(self.log_alpha * (log_pi.detach() + self.target_entropy)).mean()
+            self.alpha_optim.zero_grad()
+            alpha_loss.backward()
+            self.alpha_optim.step()
+            with torch.no_grad():
+                self.log_alpha.clamp_(-5.0, 2.0)
+            self.alpha = self.log_alpha.exp().item()
 
             if updates % self.target_update_interval == 0:
                 soft_update(self.critic_target, self.critic, self.tau)
@@ -458,6 +473,7 @@ class Agent:
                 writer.add_scalar("SAC/qf2_loss", total_qf2_loss / ac_updates, episode)
                 writer.add_scalar("SAC/actor_loss", total_actor_loss / ac_updates, episode)
                 writer.add_scalar("SAC/alpha_loss", total_alpha_loss / ac_updates, episode)
+                writer.add_scalar("SAC/alpha", self.alpha, episode)
 
             writer.add_scalar("Train/episode_reward", episode_reward, episode)
             writer.add_scalar("Train/avg_critic_loss", episode_loss, episode)
