@@ -106,12 +106,15 @@ class Agent:
 
         # Auto-tuned entropy temperature.
         # target_entropy = -|A| is the standard SAC heuristic.
-        # log_alpha is clamped to [-5, 2] (alpha in [~0.007, ~7.4]) to prevent
-        # explosion (fully random policy) or collapse (fully deterministic too early).
+        # Floor at -1.0 (alpha >= 0.37) keeps meaningful entropy at all times —
+        # going lower caused policy collapse in practice. Ceiling at 2.0 (alpha ~7.4)
+        # prevents a fully random policy early on.
+        # Dedicated LR of 3e-5 (3x slower than actor/critic) prevents alpha from
+        # collapsing faster than the policy can adapt.
         self.target_entropy = -float(self.n_actions)
         self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
         self.alpha = self.log_alpha.exp().item()
-        self.alpha_optim = Adam([self.log_alpha], lr=self.learning_rate)
+        self.alpha_optim = Adam([self.log_alpha], lr=3e-5)
 
         self.total_steps = 0
     
@@ -263,7 +266,7 @@ class Agent:
             alpha_loss.backward()
             self.alpha_optim.step()
             with torch.no_grad():
-                self.log_alpha.clamp_(-5.0, 2.0)
+                self.log_alpha.clamp_(-1.0, 2.0)
             self.alpha = self.log_alpha.exp().item()
 
             if updates % self.target_update_interval == 0:
