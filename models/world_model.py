@@ -133,7 +133,7 @@ class WorldModel(BaseModel):
 
         # === 2. Dynamics Loss ===
         # Encode next observation to get target embedding
-        next_embeds = self.encode(next_obs_normalized)  # (B, 1, embed_dim)
+        next_embeds, next_h_t = self.encode(next_obs_normalized)  # (B, 1, embed_dim)
         next_embed_target = next_embeds.view(-1, next_embeds.shape[-1])  # (B, embed_dim)
 
         # MSE between predicted and actual next embedding
@@ -179,7 +179,7 @@ class WorldModel(BaseModel):
             done_pred: (B, 1) predicted done probability
         """
         # Encode observation to latent state
-        embeds = self.encode(obs)  # (B, 1, embed_dim)
+        embeds, h_t = self.encode(obs)  # (B, 1, embed_dim)
 
         # Decode for reconstruction
         embeds_flat = embeds.view(-1, embeds.shape[-1])  # (B, embed_dim)
@@ -193,7 +193,7 @@ class WorldModel(BaseModel):
         next_embed_pred = self.normalize_embedding(next_embed_pred)
 
         # Predict reward from current state + action
-        embed_action = torch.cat([embed, action_onehot], dim=-1)
+        embed_action = torch.cat([h_t, action_onehot], dim=-1)
         reward_pred = self.reward_pred(embed_action)
 
         # Predict done from current state + action
