@@ -72,6 +72,42 @@ class ReplayBuffer:
 
         return states, actions, rewards, next_states, dones
 
+    def sample_nstep(self, batch_size, n, gamma):
+        """Sample batch with n-step discounted returns.
+
+        Rolls forward n steps from each sampled start index, accumulating
+        γ^k * r_{t+k}. Stops accumulating if a true terminal is hit.
+        Returns the state/action at t=0, the accumulated return G,
+        the next_state at the end of the window (or at the terminal),
+        and done_composite=1 if any terminal was encountered.
+        """
+        max_mem = min(self.mem_ctr, self.mem_size)
+        starts = torch.randint(0, max_mem, (batch_size,), device=self.input_device)
+
+        states  = self.state_memory[starts].to(self.output_device, dtype=torch.float32)
+        actions = self.action_memory[starts].to(self.output_device)
+
+        G      = torch.zeros(batch_size, dtype=torch.float32, device=self.output_device)
+        active = torch.ones(batch_size,  dtype=torch.float32, device=self.output_device)
+        last_idx = starts.clone()
+
+        for k in range(n):
+            idx = (starts + k) % self.mem_size
+            r   = self.reward_memory[idx].to(self.output_device)
+            d   = self.terminal_memory[idx].float().to(self.output_device)
+
+            G = G + active * (gamma ** k) * r
+
+            still_active = active.bool()
+            last_idx[still_active] = idx[still_active]
+
+            active = active * (1.0 - d)
+
+        done_composite   = (active == 0.0).float()
+        final_next_states = self.next_state_memory[last_idx].to(self.output_device, dtype=torch.float32)
+
+        return states, actions, G, final_next_states, done_composite
+
     def print_stats(self):
         filled = min(self.mem_ctr, self.mem_size)
         tensors = [self.state_memory, self.next_state_memory,
