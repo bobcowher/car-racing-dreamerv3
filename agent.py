@@ -199,7 +199,7 @@ class Agent:
         )
 
 
-    def train_actor_critic(self, sampler, horizon, batch_size, updates, epochs):
+    def train_actor_critic(self, sampler, horizon, batch_size, epochs):
 
         total_qf1_loss = 0.0
         total_qf2_loss = 0.0
@@ -251,8 +251,7 @@ class Agent:
 
             alpha_loss = torch.tensor(0.).to(self.device)
 
-            if updates % self.target_update_interval == 0:
-                soft_update(self.critic_target, self.critic, self.tau)
+            soft_update(self.critic_target, self.critic, self.tau)
         
             total_qf1_loss += qf1_loss.item()
             total_qf2_loss += qf2_loss.item()
@@ -356,7 +355,7 @@ class Agent:
             _, _, action = self.actor.sample(state)
         return action.detach().cpu().numpy()[0]
 
-    def train(self, episodes=1, offline_training_epochs=1, batch_size=1, wm_batch_size=1, imagination_steps=None, real_ratio=0.5):
+    def train(self, episodes=1, offline_training_epochs=1, batch_size=1, wm_batch_size=1, imagination_steps=None, real_ratio=0.5, warmup_episodes=5):
 
         rollout_steps = imagination_steps if imagination_steps is not None else batch_size
 
@@ -390,7 +389,7 @@ class Agent:
 
                 done = (term or trunc)
 
-                self.memory.store_transition(obs, action, reward, next_obs, done)
+                self.memory.store_transition(obs, action, reward, next_obs, term)
 
                 episode_reward += float(reward)
                 episode_steps += 1
@@ -432,13 +431,14 @@ class Agent:
                     total_dynamics_loss += dynamics_loss
                     wm_updates += 1
 
-                for _ in range(current_ratio[1]):
-                    qf1_loss, qf2_loss, actor_loss, alpha_loss = self.train_actor_critic(mixed_sampler, rollout_steps, batch_size, updates=ac_updates, epochs=1)
-                    total_qf1_loss += qf1_loss
-                    total_qf2_loss += qf2_loss
-                    total_actor_loss += actor_loss
-                    total_alpha_loss += alpha_loss
-                    ac_updates += 1
+                if episode >= warmup_episodes:
+                    for _ in range(current_ratio[1]):
+                        qf1_loss, qf2_loss, actor_loss, alpha_loss = self.train_actor_critic(mixed_sampler, rollout_steps, batch_size, epochs=1)
+                        total_qf1_loss += qf1_loss
+                        total_qf2_loss += qf2_loss
+                        total_actor_loss += actor_loss
+                        total_alpha_loss += alpha_loss
+                        ac_updates += 1
 
             avg_combined_loss = total_combined_loss / wm_updates if wm_updates > 0 else 0.0
             avg_reward_loss = total_reward_loss / wm_updates if wm_updates > 0 else 0.0
