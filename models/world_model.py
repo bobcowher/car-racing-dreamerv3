@@ -17,7 +17,7 @@ def gradient_loss(pred, target):
 
 class WorldModel(BaseModel):
 
-    def __init__(self, observation_shape=(), embed_dim=1024, n_actions=4, feature_dim=None):
+    def __init__(self, observation_shape=(), embed_dim=1024, gru_dim=512, n_actions=4, feature_dim=None):
         super().__init__()
 
         if feature_dim is None:
@@ -32,14 +32,17 @@ class WorldModel(BaseModel):
 
         self.embed_norm_layer = nn.LayerNorm(embed_dim)
 
-        self.reward_pred = nn.Linear(embed_dim + n_actions, 1)
-        self.done_pred = nn.Linear(embed_dim + n_actions, 1)
+        self.reward_pred = nn.Linear(gru_dim + n_actions, 1)
+        self.done_pred = nn.Linear(gru_dim + n_actions, 1)
 
         self.embed_dim = embed_dim
+        self.gru_dim = gru_dim
         self.n_actions = n_actions
 
+        self.gru = nn.GRU(input_size=embed_dim, hidden_size=gru_dim, batch_first=True)
+
         print(f"World Model initialized. Input shape: {observation_shape}")
-        print(f"  Embed dim: {embed_dim}")
+        print(f"  Embed dim: {embed_dim}, GRU dim: {gru_dim}")
         print(f"  Dynamics: embed + action → next_embed")
         print(f"  Prediction heads: reward, done")
 
@@ -47,7 +50,7 @@ class WorldModel(BaseModel):
     def normalize_embedding(self, embed):
         return self.embed_norm_layer(embed)
 
-    def encode(self, obs):
+    def encode(self, obs, hidden=None):
         # If obs is [B, C, H, W], add sequence dimension -> [B, 1, C, H, W]
         if obs.ndim == 4:
             obs = obs.unsqueeze(1)
@@ -61,34 +64,41 @@ class WorldModel(BaseModel):
 
         embeds = embed_flat.view(batch_size, sequence_length, -1)
 
-        return embeds
+        gru_out, hidden = self.gru(embeds, hidden)
+        h_t = gru_out.squeeze(1)
+
+        return embeds, h_t, hidden
 
     def decode(self, embeds):
         return self.decoder(embeds)
 
-    def imagine_step(self, embed, action_onehot):
+    def imagine_step(self, embed, h_t, action_onehot):
         """
         Imagination step in latent space (no decoding).
 
         Args:
             embed: (B, embed_dim) current state embedding
-            action_onehot: (B, n_actions) one-hot encoded action
+            h_t: (B, gru_dim) current GRU hidden state
+            action_onehot: (B, n_actions) action
 
         Returns:
             next_embed: (B, embed_dim) predicted next state embedding
+            next_h_t: (B, gru_dim) updated GRU hidden state
+            next_hidden: GRU hidden state tuple for stateful rollout
             reward: (B, 1) predicted reward
             done: (B, 1) predicted done probability
         """
-        # Predict next embedding and normalize it
         next_embed = self.dynamics(embed, action_onehot)
         next_embed = self.normalize_embedding(next_embed)
 
-        # Predict reward and done
-        embed_action = torch.cat([embed, action_onehot], dim=-1)
+        gru_out, next_hidden = self.gru(next_embed.unsqueeze(1), h_t.unsqueeze(0))
+        next_h_t = gru_out.squeeze(1)
+
+        embed_action = torch.cat([h_t, action_onehot], dim=-1)
         reward = self.reward_pred(embed_action)
         done = torch.sigmoid(self.done_pred(embed_action))
 
-        return next_embed, reward, done
+        return next_embed, next_h_t, next_hidden, reward, done
 
     def compute_loss(self, obs, actions, rewards, next_obs, dones):
         """
@@ -125,7 +135,7 @@ class WorldModel(BaseModel):
 
         # === 2. Dynamics Loss ===
         # Encode next observation to get target embedding
-        next_embeds = self.encode(next_obs_normalized)  # (B, 1, embed_dim)
+        next_embeds, _, _ = self.encode(next_obs_normalized)  # (B, 1, embed_dim)
         next_embed_target = next_embeds.view(-1, next_embeds.shape[-1])  # (B, embed_dim)
 
         # MSE between predicted and actual next embedding
@@ -171,7 +181,7 @@ class WorldModel(BaseModel):
             done_pred: (B, 1) predicted done probability
         """
         # Encode observation to latent state
-        embeds = self.encode(obs)  # (B, 1, embed_dim)
+        embeds, h_t, _ = self.encode(obs)  # (B, 1, embed_dim), (B, gru_dim)
 
         # Decode for reconstruction
         embeds_flat = embeds.view(-1, embeds.shape[-1])  # (B, embed_dim)
@@ -184,15 +194,9 @@ class WorldModel(BaseModel):
         next_embed_pred = self.dynamics(embed, action_onehot)  # (B, embed_dim)
         next_embed_pred = self.normalize_embedding(next_embed_pred)
 
-        # Predict reward from current state + action
-        embed_action = torch.cat([embed, action_onehot], dim=-1)
+        # Predict reward and done from GRU hidden state + action
+        embed_action = torch.cat([h_t, action_onehot], dim=-1)
         reward_pred = self.reward_pred(embed_action)
-
-        # Predict done from current state + action
         done_pred = torch.sigmoid(self.done_pred(embed_action))  # (B, 1) in [0, 1]
 
         return recon, embeds, next_embed_pred, reward_pred, done_pred
-    
-
-
-
