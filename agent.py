@@ -32,8 +32,7 @@ class MixedSampler:
 
     def _sample_real(self, batch_size, horizon):
         agent = self.agent
-        # Sample batch_size*horizon to match imagined output size
-        obs, actions, rewards, next_obs, dones = agent.memory.sample_buffer(batch_size * horizon)
+        obs, actions, rewards, next_obs, dones = agent.memory.sample_nstep(batch_size * horizon, agent.n_step, agent.gamma)
         with torch.no_grad():
             states      = agent.world_model.encode(agent.normalize_observation(obs)).squeeze(1)
             next_states = agent.world_model.encode(agent.normalize_observation(next_obs)).squeeze(1)
@@ -51,11 +50,13 @@ class Agent:
                        world_model_batch_size = 8,
                        target_update_interval = 10000,
                        alpha : float = 0.1,
-                       tau : float = 0.005) -> None:
+                       tau : float = 0.005,
+                       n_step: int = 5) -> None:
         self.env = env
         self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
         self.learning_rate = 0.0001
         self.alpha = alpha
+        self.n_step = n_step
 
         os.makedirs("checkpoints", exist_ok=True)
         os.makedirs("runs", exist_ok=True)
@@ -221,7 +222,7 @@ class Agent:
                 next_state_action, next_state_log_pi, _ = self.actor.sample(next_state_batch)
                 qf1_next_target, qf2_next_target = self.critic_target(next_state_batch, next_state_action)
                 min_qf_next_target = torch.min(qf1_next_target, qf2_next_target) - self.alpha * next_state_log_pi
-                next_q_value = reward_batch + (1.0 - mask_batch) * self.gamma * min_qf_next_target
+                next_q_value = reward_batch + (1.0 - mask_batch) * (self.gamma ** self.n_step) * min_qf_next_target
 
             qf1, qf2 = self.critic(state_batch, action_batch)  # Two Q-functions to mitigate positive bias in the policy improvement step
             qf1_loss = F.mse_loss(qf1, next_q_value)  # JQ = 𝔼(st,at)~D[0.5(Q1(st,at) - r(st,at) - γ(𝔼st+1~p[V(st+1)]))^2]
@@ -231,22 +232,19 @@ class Agent:
             # Update the critic network
             self.critic_optim.zero_grad()
             qf_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
             self.critic_optim.step()
-
-            # # Update the predictive model
-            # self.predictive_model_optim.zero_grad()
-            # prediction_error.backward()
-            # self.predictive_model_optim.step()
 
             pi, log_pi, _ = self.actor.sample(state_batch)
 
             qf1_pi, qf2_pi = self.critic(state_batch, pi)
             min_qf_pi = torch.min(qf1_pi, qf2_pi)
 
-            actor_loss = ((self.alpha * log_pi) - min_qf_pi).mean() # Jπ = 𝔼st∼D,εt∼N[α * logπ(f(εt;st)|st) − Q(st,f(εt;st))]
+            actor_loss = ((self.alpha * log_pi) - min_qf_pi).mean()
 
             self.actor_optim.zero_grad()
             actor_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
             self.actor_optim.step()
 
 
@@ -389,7 +387,8 @@ class Agent:
                 with torch.no_grad():
                     obs_t = obs.unsqueeze(0).float().to(self.device) / 255.0
                     embed = self.world_model.encode(obs_t).squeeze(1)  # (1, embed_dim)
-                    action = self.select_action(embed)
+                    gas_floor = 1.0 if episode < warmup_episodes else 0.3
+                    action = self.select_action(embed, min_gas=gas_floor)
 
                 next_obs, reward, term, trunc, _ = self.env.step(action)
 
