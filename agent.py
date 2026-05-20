@@ -356,16 +356,22 @@ class Agent:
         action[1] = max(action[1], min_gas)  # gas is index 1, floor at min_gas
         return action
 
-    def train(self, episodes=1, offline_training_epochs=1, batch_size=1, wm_batch_size=1, imagination_steps=None, real_ratio=0.5, warmup_episodes=5):
+    def train(self, episodes=1, offline_training_epochs=1, batch_size=1, wm_batch_size=1, imagination_steps=None, real_ratio=0.5, warmup_episodes=5, run_tag=None):
 
         rollout_steps = imagination_steps if imagination_steps is not None else batch_size
 
-        try:
-            run_tag = subprocess.check_output(
-                ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
-                stderr=subprocess.DEVNULL).decode().strip()
-        except Exception:
-            run_tag = 'unknown'
+        if run_tag is None:
+            try:
+                run_tag = subprocess.check_output(
+                    ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+                    stderr=subprocess.DEVNULL).decode().strip()
+                if run_tag == 'HEAD':
+                    run_tag = subprocess.check_output(
+                        ['git', 'name-rev', '--name-only', 'HEAD'],
+                        stderr=subprocess.DEVNULL).decode().strip()
+                    run_tag = run_tag.replace('remotes/origin/', '').split('~')[0].split('^')[0]
+            except Exception:
+                run_tag = 'unknown'
         summary_writer_name = f'runs/{datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}_{run_tag}'
 
         writer = SummaryWriter(summary_writer_name)
