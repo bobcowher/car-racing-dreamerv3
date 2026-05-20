@@ -14,7 +14,7 @@ class ReplayBuffer:
             self.input_device = override
         else:
             self.input_device  = input_device
-        
+
         print(f"Replay buffer memory on: {self.input_device}")
 
         self.output_device = output_device
@@ -31,15 +31,25 @@ class ReplayBuffer:
                                           device=self.input_device)
         self.reward_memory  = torch.zeros(max_size, dtype=torch.float32,
                                           device=self.input_device)
+        # terminal_memory: true only on environment termination (not time-limit truncation).
+        # Used as the bootstrapping mask in Q-targets — truncation should still bootstrap.
         self.terminal_memory = torch.zeros(max_size, dtype=torch.bool,
                                            device=self.input_device)
+        # episode_done_memory: true on any episode boundary (term OR trunc).
+        # Used by sample_nstep() to stop rolling forward across episode resets.
+        self.episode_done_memory = torch.zeros(max_size, dtype=torch.bool,
+                                               device=self.input_device)
 
     def can_sample(self, batch_size: int) -> bool:
         """Require at least 10×batch_size transitions before sampling."""
         return self.mem_ctr >= batch_size * 10
 
-    def store_transition(self, state, action, reward, next_state, done):
-        """Write a transition in-place on `input_device`."""
+    def store_transition(self, state, action, reward, next_state, terminal, episode_done):
+        """Write a transition in-place on `input_device`.
+
+        terminal    — true only on environment termination (suppresses bootstrapping).
+        episode_done — true on any episode boundary (term or trunc); stops n-step rollout.
+        """
         idx = self.mem_ctr % self.mem_size
 
         self.state_memory[idx]      = torch.as_tensor(
@@ -47,9 +57,10 @@ class ReplayBuffer:
         self.next_state_memory[idx] = torch.as_tensor(
             next_state, dtype=torch.uint8, device=self.input_device)
 
-        self.action_memory[idx]   = torch.as_tensor(action, dtype=torch.float32, device=self.input_device)
-        self.reward_memory[idx]   = float(reward)
-        self.terminal_memory[idx] = bool(done)
+        self.action_memory[idx]      = torch.as_tensor(action, dtype=torch.float32, device=self.input_device)
+        self.reward_memory[idx]      = float(reward)
+        self.terminal_memory[idx]    = bool(terminal)
+        self.episode_done_memory[idx] = bool(episode_done)
 
         self.mem_ctr += 1
 
@@ -59,15 +70,10 @@ class ReplayBuffer:
         batch   = torch.randint(0, max_mem, (batch_size,),
                                 device=self.input_device, dtype=torch.int64)
 
-        # Cast / move once, right here
-        states      = self.state_memory[batch]     \
-                        .to(self.output_device, dtype=torch.float32)
-        next_states = self.next_state_memory[batch]\
-                        .to(self.output_device, dtype=torch.float32)
+        states      = self.state_memory[batch].to(self.output_device, dtype=torch.float32)
+        next_states = self.next_state_memory[batch].to(self.output_device, dtype=torch.float32)
         rewards     = self.reward_memory[batch].to(self.output_device)
         dones       = self.terminal_memory[batch].to(self.output_device)
-
-        # **Return actions as 1-D (B,) LongTensor — caller will unsqueeze**
         actions     = self.action_memory[batch].to(self.output_device)
 
         return states, actions, rewards, next_states, dones
@@ -76,10 +82,11 @@ class ReplayBuffer:
         """Sample batch with n-step discounted returns.
 
         Rolls forward n steps from each sampled start index, accumulating
-        γ^k * r_{t+k}. Stops accumulating if a true terminal is hit.
-        Returns the state/action at t=0, the accumulated return G,
-        the next_state at the end of the window (or at the terminal),
-        and done_composite=1 if any terminal was encountered.
+        γ^k * r_{t+k}. Stops accumulating at any episode boundary (term or trunc)
+        so returns never cross episode resets.
+
+        done_composite is 1 only when a true terminal was encountered — truncation
+        boundaries still allow Q-value bootstrapping.
         """
         max_mem = min(self.mem_ctr, self.mem_size)
         starts = torch.randint(0, max_mem, (batch_size,), device=self.input_device)
@@ -87,23 +94,30 @@ class ReplayBuffer:
         states  = self.state_memory[starts].to(self.output_device, dtype=torch.float32)
         actions = self.action_memory[starts].to(self.output_device)
 
-        G      = torch.zeros(batch_size, dtype=torch.float32, device=self.output_device)
-        active = torch.ones(batch_size,  dtype=torch.float32, device=self.output_device)
-        last_idx = starts.clone()
+        G          = torch.zeros(batch_size, dtype=torch.float32, device=self.output_device)
+        active     = torch.ones(batch_size,  dtype=torch.float32, device=self.output_device)
+        terminated = torch.zeros(batch_size, dtype=torch.float32, device=self.output_device)
+        last_idx   = starts.clone()
 
         for k in range(n):
-            idx = (starts + k) % self.mem_size
-            r   = self.reward_memory[idx].to(self.output_device)
-            d   = self.terminal_memory[idx].float().to(self.output_device)
+            idx      = (starts + k) % self.mem_size
+            r        = self.reward_memory[idx].to(self.output_device)
+            ep_done  = self.episode_done_memory[idx].float().to(self.output_device)
+            term     = self.terminal_memory[idx].float().to(self.output_device)
 
             G = G + active * (gamma ** k) * r
 
             still_active = active.bool()
             last_idx[still_active] = idx[still_active]
 
-            active = active * (1.0 - d)
+            # Track true terminals encountered while still in the rollout window
+            terminated = terminated + active * term
 
-        done_composite   = (active == 0.0).float()
+            # Stop rolling forward at any episode boundary (term or trunc)
+            active = active * (1.0 - ep_done)
+
+        # Bootstrapping mask: suppress only on true termination, not time-limit truncation
+        done_composite    = (terminated > 0).float()
         final_next_states = self.next_state_memory[last_idx].to(self.output_device, dtype=torch.float32)
 
         return states, actions, G, final_next_states, done_composite
@@ -111,7 +125,8 @@ class ReplayBuffer:
     def print_stats(self):
         filled = min(self.mem_ctr, self.mem_size)
         tensors = [self.state_memory, self.next_state_memory,
-                   self.action_memory, self.reward_memory, self.terminal_memory]
+                   self.action_memory, self.reward_memory,
+                   self.terminal_memory, self.episode_done_memory]
         used_bytes  = sum(t.element_size() * t.numel() * filled / self.mem_size for t in tensors)
         total_bytes = sum(t.element_size() * t.numel() for t in tensors)
         print(f"{filled} memories loaded | "

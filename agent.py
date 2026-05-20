@@ -403,7 +403,7 @@ class Agent:
 
                 done = (term or trunc)
 
-                self.memory.store_transition(obs, action, reward, next_obs, term)
+                self.memory.store_transition(obs, action, reward, next_obs, term, done)
 
                 episode_reward += float(reward)
                 episode_steps += 1
