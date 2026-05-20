@@ -232,22 +232,19 @@ class Agent:
             # Update the critic network
             self.critic_optim.zero_grad()
             qf_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
             self.critic_optim.step()
-
-            # # Update the predictive model
-            # self.predictive_model_optim.zero_grad()
-            # prediction_error.backward()
-            # self.predictive_model_optim.step()
 
             pi, log_pi, _ = self.actor.sample(state_batch)
 
             qf1_pi, qf2_pi = self.critic(state_batch, pi)
             min_qf_pi = torch.min(qf1_pi, qf2_pi)
 
-            actor_loss = ((self.alpha * log_pi) - min_qf_pi).mean() # Jπ = 𝔼st∼D,εt∼N[α * logπ(f(εt;st)|st) − Q(st,f(εt;st))]
+            actor_loss = ((self.alpha * log_pi) - min_qf_pi).mean()
 
             self.actor_optim.zero_grad()
             actor_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
             self.actor_optim.step()
 
 
