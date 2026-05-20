@@ -390,7 +390,8 @@ class Agent:
                 with torch.no_grad():
                     obs_t = obs.unsqueeze(0).float().to(self.device) / 255.0
                     embed = self.world_model.encode(obs_t).squeeze(1)  # (1, embed_dim)
-                    action = self.select_action(embed)
+                    gas_floor = 1.0 if episode < warmup_episodes else 0.3
+                    action = self.select_action(embed, min_gas=gas_floor)
 
                 next_obs, reward, term, trunc, _ = self.env.step(action)
 
