@@ -1,4 +1,5 @@
 import torch
+import math
 import os
 
 class ReplayBuffer:
@@ -58,7 +59,7 @@ class ReplayBuffer:
             next_state, dtype=torch.uint8, device=self.input_device)
 
         self.action_memory[idx]      = torch.as_tensor(action, dtype=torch.float32, device=self.input_device)
-        self.reward_memory[idx]      = float(reward)
+        self.reward_memory[idx]      = math.copysign(math.log(abs(reward) + 1), reward)
         self.terminal_memory[idx]    = bool(terminal)
         self.episode_done_memory[idx] = bool(episode_done)
 
