@@ -394,17 +394,20 @@ class Agent:
 
         if run_tag is None:
             try:
-                # git branch --show-current is most reliable: returns branch name
-                # in attached HEAD, empty string in detached HEAD (git 2.22+)
-                run_tag = subprocess.check_output(
-                    ['git', 'branch', '--show-current'],
+                # Find which remote branch matches HEAD — handles Beekeeper's
+                # "git reset --hard origin/<branch>" which doesn't update the
+                # local branch pointer, so git branch --show-current is wrong.
+                refs = subprocess.check_output(
+                    ['git', 'for-each-ref', '--format=%(refname:short)',
+                     '--points-at', 'HEAD', 'refs/remotes/origin/'],
                     stderr=subprocess.DEVNULL).decode().strip()
+                if refs:
+                    run_tag = refs.splitlines()[0].replace('origin/', '')
                 if not run_tag:
-                    # Detached HEAD fallback: ask git to name the commit
+                    # Fallback: local branch name (works on dev machines)
                     run_tag = subprocess.check_output(
-                        ['git', 'name-rev', '--name-only', 'HEAD'],
+                        ['git', 'branch', '--show-current'],
                         stderr=subprocess.DEVNULL).decode().strip()
-                    run_tag = run_tag.replace('remotes/origin/', '').split('~')[0].split('^')[0]
                 if not run_tag:
                     run_tag = 'unknown'
             except Exception:
