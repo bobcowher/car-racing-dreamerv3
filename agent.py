@@ -272,8 +272,6 @@ class Agent:
 
             alpha_loss = torch.tensor(0.).to(self.device)
 
-            soft_update(self.critic_target, self.critic, self.tau)
-        
             total_qf1_loss += qf1_loss.item()
             total_qf2_loss += qf2_loss.item()
             total_actor_loss += actor_loss.item()
@@ -495,6 +493,9 @@ class Agent:
                         total_actor_loss += actor_loss
                         total_alpha_loss += alpha_loss
                         ac_updates += 1
+
+            if episode % 10 == 0:
+                hard_update(self.critic_target, self.critic)
 
             avg_combined_loss = total_combined_loss / wm_updates if wm_updates > 0 else 0.0
             avg_reward_loss = total_reward_loss / wm_updates if wm_updates > 0 else 0.0
