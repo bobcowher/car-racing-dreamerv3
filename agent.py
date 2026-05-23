@@ -76,7 +76,7 @@ class Agent:
             high=np.array([1.0, 1.0], dtype=np.float32),
         )
         self.n_actions = self.actor_action_space.shape[0]  # 2
-        self.ac_hidden_size = 512
+        self.ac_hidden_size = 256
 
         self.memory = ReplayBuffer(max_size=max_buffer_size, input_shape=obs.shape, input_device=self.device, output_device=self.device, action_dim=self.n_actions)
 
