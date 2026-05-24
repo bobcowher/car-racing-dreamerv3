@@ -342,11 +342,12 @@ class Agent:
             obs = self.process_observation(obs)
             done = False
             episode_reward = 0.0
+            gru_hidden = None
 
             while not done:
                 with torch.no_grad():
                     obs_t = obs.unsqueeze(0).float().to(self.device) / 255.0
-                    _, h_t, _ = self.world_model.encode(obs_t)
+                    _, h_t, gru_hidden = self.world_model.encode(obs_t, gru_hidden)
 
                 actor_action = self.select_action(h_t, evaluate=True)
                 next_obs, reward, term, trunc, _ = self.env.step(self.decode_action(actor_action))
@@ -426,6 +427,7 @@ class Agent:
             episode_reward = 0.0
             episode_loss = 0.0
             episode_steps = 0
+            gru_hidden = None
 
             while not done:
 
@@ -434,7 +436,7 @@ class Agent:
                 else:
                     with torch.no_grad():
                         obs_t = obs.unsqueeze(0).float().to(self.device) / 255.0
-                        _, h_t, _ = self.world_model.encode(obs_t)
+                        _, h_t, gru_hidden = self.world_model.encode(obs_t, gru_hidden)
                         actor_action = self.select_action(h_t)
 
                 car_action = self.decode_action(actor_action)
