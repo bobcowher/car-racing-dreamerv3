@@ -109,7 +109,7 @@ class ReplayBuffer:
 
             G = G + active * (gamma ** k) * r
 
-            still_active = active.bool()
+            still_active = active.bool().to(self.input_device)
             last_idx[still_active] = idx[still_active]
 
             terminated = terminated + active * term
