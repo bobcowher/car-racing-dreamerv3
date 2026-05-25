@@ -1,6 +1,3 @@
-import os
-os.environ["REPLAY_BUFFER_MEMORY"] = "cpu"
-
 from agent import Agent
 import gymnasium as gym
 
