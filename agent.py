@@ -199,6 +199,7 @@ class Agent:
         total_loss = 0.0
         total_recon = 0.0
         total_dynamics = 0.0
+        total_overshoot = 0.0
         total_reward = 0.0
         total_done = 0.0
 
@@ -215,6 +216,7 @@ class Agent:
             total_loss += loss_dict["total"]
             total_recon += loss_dict["recon"]
             total_dynamics += loss_dict["dynamics"]
+            total_overshoot += loss_dict["overshoot"]
             total_reward += loss_dict["reward"]
             total_done += loss_dict["done"]
 
@@ -224,6 +226,7 @@ class Agent:
             total_done / epochs,
             total_recon / epochs,
             total_dynamics / epochs,
+            total_overshoot / epochs,
         )
 
 
@@ -470,6 +473,7 @@ class Agent:
             total_done_loss = 0.0
             total_recon_loss = 0.0
             total_dynamics_loss = 0.0
+            total_overshoot_loss = 0.0
             total_qf1_loss = 0.0
             total_qf2_loss = 0.0
             total_actor_loss = 0.0
@@ -482,12 +486,13 @@ class Agent:
                 for _ in range(current_ratio[0]):
                     if not self.memory.can_sample_sequences(wm_batch_size, self.wm_sequence_length):
                         break
-                    combined_loss, reward_loss, done_loss, recon_loss, dynamics_loss = self.train_world_model(epochs=1, batch_size=wm_batch_size)
+                    combined_loss, reward_loss, done_loss, recon_loss, dynamics_loss, overshoot_loss = self.train_world_model(epochs=1, batch_size=wm_batch_size)
                     total_combined_loss += combined_loss
                     total_reward_loss += reward_loss
                     total_done_loss += done_loss
                     total_recon_loss += recon_loss
                     total_dynamics_loss += dynamics_loss
+                    total_overshoot_loss += overshoot_loss
                     wm_updates += 1
 
                 if episode >= warmup_episodes:
@@ -507,11 +512,13 @@ class Agent:
             avg_done_loss = total_done_loss / wm_updates if wm_updates > 0 else 0.0
             avg_recon_loss = total_recon_loss / wm_updates if wm_updates > 0 else 0.0
             avg_dynamics_loss = total_dynamics_loss / wm_updates if wm_updates > 0 else 0.0
+            avg_overshoot_loss = total_overshoot_loss / wm_updates if wm_updates > 0 else 0.0
             episode_loss = (total_qf1_loss + total_qf2_loss) / (2 * ac_updates) if ac_updates > 0 else 0.0
 
             writer.add_scalar("World Model/combined_loss", avg_combined_loss, episode)
             writer.add_scalar("World Model/reconstruction_loss", avg_recon_loss, episode)
             writer.add_scalar("World Model/dynamics_loss", avg_dynamics_loss, episode)
+            writer.add_scalar("World Model/overshoot_loss", avg_overshoot_loss, episode)
             writer.add_scalar("World Model/reward_loss", avg_reward_loss, episode)
             writer.add_scalar("World Model/done_loss", avg_done_loss, episode)
 

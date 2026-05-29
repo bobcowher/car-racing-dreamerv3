@@ -17,11 +17,18 @@ def gradient_loss(pred, target):
 
 class WorldModel(BaseModel):
 
-    def __init__(self, observation_shape=(), embed_dim=1024, gru_dim=512, n_actions=4, feature_dim=None):
+    def __init__(self, observation_shape=(), embed_dim=1024, gru_dim=512, n_actions=4, feature_dim=None,
+                 overshoot_horizon=5, overshoot_weight=0.5):
         super().__init__()
 
         if feature_dim is None:
             feature_dim = embed_dim
+
+        # Latent overshooting: roll the dynamics K steps on its OWN predictions
+        # (real actions) and penalize each step against the real encoder embed.
+        # Single-step teacher forcing never sees compounding error; this does.
+        self.overshoot_horizon = overshoot_horizon
+        self.overshoot_weight = overshoot_weight
 
         self.encoder = Encoder(observation_shape=observation_shape, embed_dim=embed_dim)
         self.decoder = Decoder(observation_shape=observation_shape, embed_dim=feature_dim,
@@ -146,6 +153,30 @@ class WorldModel(BaseModel):
         next_embed_target = embeds[:, 1:, :].reshape(num_pairs, -1).detach()
         dynamics_loss     = F.mse_loss(next_embed_pred, next_embed_target)
 
+        # === Latent overshooting loss: free-running K-step rollout ===
+        # Closes the train/test horizon gap. Single-step teacher forcing always
+        # feeds the REAL embed in; imagination feeds the model its OWN output for
+        # many steps. Here we roll the dynamics K steps on its own predictions
+        # (with the real action sequence) and penalize every intermediate step
+        # against the real encoder embed. Gradients flow through the whole chain,
+        # so the model is trained to stay on-manifold under iteration.
+        K = min(self.overshoot_horizon, sequence_length - 1)
+        if K >= 2 and self.overshoot_weight > 0:
+            S = sequence_length - K                      # number of rollout starts
+            D, A = self.embed_dim, self.n_actions
+            pred = embeds[:, :S, :]                      # (N, S, D) real start states
+            overshoot_loss = torch.zeros((), device=embeds.device)
+            for k in range(K):
+                act_k = actions[:, k:S + k, :].reshape(num_sequences * S, A)
+                pred  = self.normalize_embedding(
+                    self.dynamics(pred.reshape(num_sequences * S, D), act_k)
+                ).reshape(num_sequences, S, D)
+                tgt_k = embeds[:, k + 1:S + k + 1, :].detach()
+                overshoot_loss = overshoot_loss + F.mse_loss(pred, tgt_k)
+            overshoot_loss = overshoot_loss / K
+        else:
+            overshoot_loss = torch.zeros((), device=embeds.device)
+
         # === Reward and done prediction from (gru_outputs[t], actions[t]) ===
         gru_outputs_flat = gru_outputs.reshape(num_sequences * sequence_length, -1)
         actions_flat     = actions.reshape(num_sequences * sequence_length, -1)
@@ -159,14 +190,16 @@ class WorldModel(BaseModel):
 
         combined_loss = (1.0 * recon_loss
                          + 1.0 * dynamics_loss
+                         + self.overshoot_weight * overshoot_loss
                          + 2.0 * reward_loss
                          + 0.5 * done_loss)
 
         return combined_loss, {
-            "total":    combined_loss.item(),
-            "recon":    recon_loss.item(),
-            "dynamics": dynamics_loss.item(),
-            "reward":   reward_loss.item(),
+            "total":     combined_loss.item(),
+            "recon":     recon_loss.item(),
+            "dynamics":  dynamics_loss.item(),
+            "overshoot": overshoot_loss.item(),
+            "reward":    reward_loss.item(),
             "done":     done_loss.item(),
         }
     
